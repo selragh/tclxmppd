@@ -1,0 +1,20 @@
+# Jabber chime component configuration file
+#
+# You MUST modify this to suit your environment.
+
+# Local server name
+#
+JID            chime.DOMAIN.NAME
+Resource       chime
+
+JabberServer   localhost
+JabberPort     5347
+Secret         JCPPASSWORD
+
+# Details for the Jabber conference room to join to.
+#
+Conference      MUC@CONFERENCE.DOMAIN.NAME
+
+# How noisy?
+#   debug info notice warn error critical
+LogLevel       notice
