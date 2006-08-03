@@ -1,0 +1,97 @@
+2006-08-04  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* sm.tcl:       Authentication via DIO to database.
+	* dio/*:        Brought in modified DIO from Apache Rivet.
+
+2006-04-16  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* s2c.tcl:      Refactored code to use a shared core set for the 
+	* s2s.tcl:      server-wide configuration data and logging.
+	* core.tcl:
+	* cmdloop.tcl:
+
+2005-01-15  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* ijbridge.tcl: Added optional hourly chime code. Removed s2s
+	                commented code.
+	* chime.tcl:    Fixed the next chime calculation. Had eeevil bug.
+
+2005-01-15  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* chime.tcl:    An hourly chime component. Sends a timestamp
+	                message to a chatroom on the hour. Uses JCP.
+	* cmdloop.tcl:  Utility library which permits a tclsh app to be
+	                controlled via stdin or a socket.
+
+2004-12-09  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* ijbridge.tcl:  Various fixes to create a working jabber component
+	* ijbridge.conf: that bridges a MUC with an IRC channel. 
+	* wrapper.tcl:   Removed a debugging line.
+
+2004-12-08  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* jcp.tcl:      NEW FILE: Jabber Component Protocol
+	* ijbridge.tcl: Now uses JCP instead of S2S
+	* wrapper.tcl:  David Graveraux's modified tDOM using wrapper.
+
+2004-11-30  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* ijbridge.conf.sample: NEW sample config file for ijbridge.
+	* ijbridge.tcl: Various nick presence cleanups.
+
+2004-11-28  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* pkgIndex.tcl: Added package index.
+	* ijbridge.tcl: Added reading commands from stdin under
+	unix. Under windows you can just run it in tkcon.
+
+2004-11-28  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* ijbridge.tcl: Bridge script now links IRC and S2S successfully.
+
+2004-11-25  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* licence.terms: Added Tcl license document.
+	* ijbridge.tcl:  Started playing with ijbridge to work the kinks
+	                 out of the s2s api.
+	
+2004-11-25  Pat Thoyts  <patthoyts@users.sourceforge.net>
+	
+	* TAG:     ====== tagged xmppd-1-0-0  =====
+
+	* test-s2s.tcl: Test application code.
+	* s2s.tcl: Working version. This correctly validates and xmits and
+	recieves. Added a handler option that is called for all Jabber
+	stanzas. Moved application code into separate file so s2s can be a
+	package. Fixed recovery after a channel goes down.
+
+2004-11-24  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* s2s.tcl: Finally persuaded both sides to validate. Jabberd is
+	now prepared to talk to us (at least when _we_ initiate the
+	connection).
+
+2004-11-24  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* s2s.tcl: Redesigned to separate channels and sessions living on
+	top of channels. This permits multiple routes over a single socket
+	(which jabberd2 is doing). Close.
+
+2004-11-20  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* s2s.tcl: Still in progress. This version nicely keeps each
+	stream (in/out) separated but manages to use the same callbacks
+	quite simple. We are successully dealing with the outbound
+	connections (jabberd2 is happy) but we are not managing to handle
+	the inbound ones properly. This is because both all.tclers.tk and
+	tach.tclers.tk are coming in on the same channel. So we have to be
+	able to hook up multiple sessions per channel.
+
+2004-11-19  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* s2s.tcl: Still not complete. Reconfigured big time.
+
+2004-11-18  Pat Thoyts  <patthoyts@users.sourceforge.net>
+
+	* s2s.tcl: NEW file: Jabber server to server daemon.
