@@ -3,13 +3,13 @@
 # JEP-0114 - Jabber Component Protocol
 #
 
-package require wrapper;                # jabberlib
+package require xmppd::wrapper;         # tclxmppd
 package require sha1;                   # tcllib
 package require logger;                 # tcllib
 
 namespace eval ::xmppd {}
 namespace eval ::xmppd::jcp {
-    variable version 1.0.0
+    variable version 1.1.0
     variable rcsid {$Id: jcp.tcl,v 1.2 2004/12/08 15:22:11 pat Exp $}
 
     variable options
@@ -208,13 +208,12 @@ proc ::xmppd::jcp::OnErrorStream {Component code args} {
 proc ::xmppd::jcp::OnInput {Component xmllist} {
     variable options
     upvar #0 $Component state
-    Log debug "INPUT $Component $xmllist"
+    #Log debug "INPUT $Component $xmllist"
 
-    foreach {cmd attr close value children} $xmllist break
     array set a {xmlns {} from {} to {}}
-    array set a $attr
+    array set a [wrapper::getattrlist $xmllist]
 
-    switch -exact -- $cmd {
+    switch -exact -- [set tag [wrapper::gettag $xmllist]] {
         features {
             Log notice "? features $xmllist"
         }
@@ -224,17 +223,20 @@ proc ::xmppd::jcp::OnInput {Component xmllist} {
         verify {
             Log notice "? verify $xmllist"
         }
+        handshake -
         iq -
         message -
         presence {
             if {$options(handler) ne {}} {
-                eval $options(handler) $xmllist
+                if {[catch {$options(handler) $xmllist} err]} {
+                    Log error "! error handing \"$tag\" stanza: $err"
+                }
             } else {
-                Log error "! No handler defined for \"$cmd\" stanzas"
+                Log error "! No handler defined for \"$tag\" stanzas"
             }
         }
         default {
-            Log notice "- \"$cmd\" $xmllist"
+            Log notice "- unrecognized stanza: $xmllist"
         }
     }
 }

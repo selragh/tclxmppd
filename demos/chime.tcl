@@ -18,7 +18,7 @@ package require xmppd::jcp;             # tclxmppd
 package require xmppd::wrapper;         # jabberlib
 
 namespace eval ::chime {
-    variable version 1.0.0
+    variable version 1.1.0
     variable rcsid {$Id: chime.tcl,v 1.3 2006/04/13 11:50:31 pat Exp $}
 
     variable Options
@@ -58,12 +58,6 @@ proc ::chime::start {} {
         -handler   [namespace current]::Handler
     set Component [xmppd::jcp::create \
                        $Options(JabberServer) $Options(JabberPort)]
-
-    set jid "$Options(Name)@$Options(JID)/$Options(Resource)"
-    set nick "$Options(Conference)/$Options(Name)"
-    after 200 [list [namespace origin presence] $jid $nick \
-                   available online {Hourly chime}]
-
     chimes start
     return
 }
@@ -88,20 +82,31 @@ proc ::chime::stop {} {
 #	Jabber message routing. For this component, we don't need to
 #	do anything as all we do is issue a time message on the hour.
 #
-proc ::chime::Handler {type attributes close value children} {
+proc ::chime::Handler {xmllist} {
+    variable Options
     array set a {from {} to {} type {}}
-    array set a $attributes
+    array set a [wrapper::getattrlist $xmllist]
 
-    switch -exact -- $type {
+    switch -exact -- [set type [wrapper::gettag $xmllist]] {
+        handshake {
+            # A handshake stanza in the accept namespace indicates that
+            # we have a valid connection to our server and can route.
+            if {$a(xmlns) eq "jabber:component:accept"} {
+                set jid "$Options(Name)@$Options(JID)/$Options(Resource)"
+                set nick "$Options(Conference)/$Options(Name)"
+                after idle [namespace code \
+                                [list presence $jid $nick \
+                                     {} online {Hourly chime bot}]]
+            }
+        }
         message {}
         presence {}
         iq {
             switch -exact -- $a(type) {
                 get {
+                    set children [wrapper::getchildswithtag $xmllist query]
                     foreach child $children {
-                        if {[wrapper::gettag $child] eq "query"} {
-                            HandleIQ $child $a(id) $a(to) $a(from)
-                        }
+                        HandleIQ $child $a(id) $a(to) $a(from)
                     }
                 }
             }            
@@ -140,7 +145,7 @@ proc ::chime::HandleIQ {child id self requester} {
             if {[string length $node] == 0} {
                 lappend parts [list identity \
                                    [list name $Options(Name) \
-                                        type text category gateway] 1 {} {}]
+                                        type chime category service] 1 {} {}]
                 lappend parts [list feature {var jabber:iq:version} 1 {} {}]
                 lappend parts [list feature {var iq} 1 {} {}]
                 lappend parts [list feature {var message} 1 {} {}]
@@ -238,7 +243,7 @@ proc ::chime::LoadConfig {{conf {}}} {
         }
         close $f
     } else {
-        log warn "configuration file \"$conf\" could not be opened"
+        return -code error "configuration file \"$conf\" could not be opened"
     }
     return
 }
@@ -326,7 +331,7 @@ proc ::chime::Main {} {
     # Begin the component
     start
 
-    # Loop forever, dealing with Wish or Tclsh
+    # Loop forever, dealing with wish, tclsh or tclsvc
     if {[info exists tk_version]} {
         if {[tk windowingsystem] eq "win32"} { console show }
         wm withdraw .
