@@ -6,12 +6,11 @@
 # procedures are called by functions in jabberlib, and
 # they in turn call the TclXML library functions.
 #
-# Seems to be originally written by Kerem HADIMLI, with additions
-# from Todd Bradley. Completely rewritten from scratch by Mats Bengtsson.
-# The algorithm for building parse trees has been completely redesigned.
-# Only some structures and API names are kept essentially unchanged.
+#  Copyright (c) 2002-2008  Mats Bengtsson
+#  
+# This file is distributed under BSD style license.
 #
-# $Id: wrapper.tcl,v 1.2 2004/12/09 09:12:55 pat Exp $
+# $Id: wrapper.tcl,v 1.41 2008/03/26 15:37:23 matben Exp $
 # 
 # ########################### INTERNALS ########################################
 # 
@@ -69,7 +68,10 @@
 #       030910   added accessor functions to get/set xmllist elements
 #       031103   added splitxml command
 
-package require tdom 0.8
+
+if {[catch {package require tdom}]} {
+    package require xml 3.1
+}
 
 namespace eval wrapper {
 
@@ -78,13 +80,12 @@ namespace eval wrapper {
 
     # Keep all internal data in this array, with 'id' as first index.
     variable wrapper
-    variable debug 1
     
     # Running id that is never reused; start from 0.
-    set wrapper(freeid) 0
+    set wrapper(uid) 0
     
     # Keep all 'id's in this list.
-    set wrapper(list) {}
+    set wrapper(list) [list]
     
     variable xmldefaults {-isempty 1 -attrlist {} -chdata {} -subtags {}}
 }
@@ -104,30 +105,11 @@ namespace eval wrapper {
 # Results:
 #       A unique wrapper id.
 
-proc wrapper::new {streamstartcmd streamendcmd parsecmd errorcmd args} {
+proc wrapper::new {streamstartcmd streamendcmd parsecmd errorcmd} {
     variable wrapper
-    variable debug
     
-    if {$debug > 1}  {
-	puts "wrapper::new"
-    }
-    
-    set parseropt "-namespace"
-    while {[string match -* [set option [lindex $args 0]]]} {
-        switch -exact -- $option {
-            -namespace {
-                if {[lindex $args 1] == 0} {
-                    set parseropt ""
-                }
-                set args [lrange $args 1 end] 
-            }
-        }
-        set args [lrange $args 1 end]
-    }
-
     # Handle id of the wrapper.
-    set id "wrap$wrapper(freeid)"
-    incr wrapper(freeid)
+    set id wrap[incr wrapper(uid)]
     lappend wrapper(list) $id
     
     set wrapper($id,streamstartcmd) $streamstartcmd
@@ -137,25 +119,68 @@ proc wrapper::new {streamstartcmd streamendcmd parsecmd errorcmd args} {
     
     # Create the actual XML parser. It is created in our present namespace,
     # at least for the tcl parser!!!
-    set wrapper($id,parser) [eval [linsert $parseropt 0 xml::parser]]
-    set wrapper($id,class) "expat"
-    $wrapper($id,parser) configure   \
-      -final 0    \
-      -elementstartcommand  [list [namespace current]::elementstart $id]   \
-      -elementendcommand    [list [namespace current]::elementend $id]     \
-      -characterdatacommand [list [namespace current]::chdata $id]         \
-      -ignorewhitespace     1
-    
-    puts "parser namespace handling: [$wrapper($id,parser) cget -namespace]"
 
+    if {[llength [package provide tdom]]} {
+	#set wrapper($id,parser) [xml::parser -namespace 1]
+	set wrapper($id,parser) [expat -namespace 1]
+	set wrapper($id,class) "tdom"
+	$wrapper($id,parser) configure \
+	  -final 0  \
+	  -elementstartcommand  [list [namespace current]::elementstart $id]  \
+	  -elementendcommand    [list [namespace current]::elementend $id]    \
+	  -characterdatacommand [list [namespace current]::chdata $id]        \
+	  -ignorewhitespace 0
+    } else {
+	set wrapper($id,parser) [xml::parser]
+    
+	# Investigate which parser class we've got, and act consequently.
+	set classes [::xml::parserclass info names]
+	if {[lsearch $classes "expat"] >= 0} {
+	    set wrapper($id,class) "expat"
+	    $wrapper($id,parser) configure   \
+	      -final 0    \
+	      -reportempty 1   \
+	      -elementstartcommand  [list [namespace current]::elementstart $id]   \
+	      -elementendcommand    [list [namespace current]::elementend $id]     \
+	      -characterdatacommand [list [namespace current]::chdata $id]         \
+	      -ignorewhitespace     1                                              \
+	      -defaultexpandinternalentities 0
+	} else {
+	    set wrapper($id,class) "tcl"
+	    $wrapper($id,parser) configure   \
+	      -final 0    \
+	      -reportempty 1   \
+	      -elementstartcommand  [list [namespace current]::elementstart $id]   \
+	      -elementendcommand    [list [namespace current]::elementend $id]     \
+	      -characterdatacommand [list [namespace current]::chdata $id]         \
+	      -errorcommand         [list [namespace current]::xmlerror $id]       \
+	      -ignorewhitespace     1                                              \
+	      -defaultexpandinternalentities 0
+	}
+    }
+    
+    # Experiment.
+    if {0} {
+	package require qdxml
+	set token [qdxml::create \
+	  -elementstartcommand  [list [namespace current]::elementstart $id]   \
+	  -elementendcommand    [list [namespace current]::elementend $id]     \
+	  -characterdatacommand [list [namespace current]::chdata $id]]
+	set wrapper($id,parser) $token
+    }
+    
     # Current level; 0 before root tag; 1 just after root tag, 2 after 
     # command tag, etc.
     set wrapper($id,level) 0
-    set wrapper($id,levelonetag) {}
+    set wrapper($id,levelonetag) ""
     
     # Level 1 is the main tag, <stream:stream>, and level 2
     # is the command tag, such as <message>. We don't handle level 1 xmldata.
-    set wrapper($id,tree,2) {}        
+    set wrapper($id,tree,2) [list]
+    
+    set wrapper($id,refcount) 0
+    set wrapper($id,stack) ""
+
     return $id
 }
 
@@ -175,20 +200,8 @@ proc wrapper::parse {id xml} {
 
     # This is not as innocent as it looks; the 'tcl' parser proc is created in
     # the creators namespace (wrapper::), but the 'expat' parser ???
-    set parser $wrapper($id,parser)
-    parsereentrant $parser $xml
-    return {}
-}
-
-# Reentrant xml parser wrapper. This ought to go in the parser!
-
-namespace eval wrapper {
-
-    # A reference counter for reentries.
-    variable refcount 0
-    
-    # Stack for xml.
-    variable stack ""
+    parsereentrant $id $xml
+    return
 }
 
 # wrapper::parsereentrant --
@@ -198,35 +211,41 @@ namespace eval wrapper {
 #       event right from an element callback, everyhting will be out of sync.
 #       
 # Arguments:
-#       p:           the parser.
+#       id:          the wrapper id
 #       xml:         raw xml data to be parsed.
 #       
 # Results:
 #       none.
 
-proc wrapper::parsereentrant {p xml} {
-    variable refcount
-    variable stack
+proc wrapper::parsereentrant {id xml} {
+    variable wrapper
     
-    incr refcount
+    set p $wrapper($id,parser)   
+    set refcount [incr wrapper($id,refcount)]
+    
     if {$refcount == 1} {
 	
 	# This is the main entry: do parse original xml.
 	$p parse $xml
 	
 	# Parse everything on the stack (until empty?).
-	while {[string length $stack] > 0} {
-	    set tmpstack $stack
-	    set stack ""
-	    $p parse $tmpstack
+	while {[string length $wrapper($id,stack)] > 0} {
+	    set tmp $wrapper($id,stack)
+	    set wrapper($id,stack) ""
+	    $p parse $tmp
 	}
     } else {
 	
 	# Reentry, put on stack for delayed execution.
-	append stack $xml
+	append wrapper($id,stack) $xml
     }
-    incr refcount -1
-    return {}
+    
+    # If we was reset from callback 'refcount' can have been reset to 0.
+    incr wrapper($id,refcount) -1
+    if {$wrapper($id,refcount) < 0} {
+	set wrapper($id,refcount) 0
+    }
+    return
 }
 
 # wrapper::elementstart --
@@ -244,13 +263,7 @@ proc wrapper::parsereentrant {p xml} {
 
 proc wrapper::elementstart {id tagname attrlist args} {
     variable wrapper
-    variable debug
-    
-    if {$debug > 1}  {
-	puts "wrapper::elementstart id=$id, tagname=$tagname,  \
-	  attrlist='$attrlist', args=$args"
-    }
-    
+
     # Check args, to see if empty element and/or namespace. 
     # Put xmlns in attribute list.
     array set argsarr $args
@@ -262,13 +275,12 @@ proc wrapper::elementstart {id tagname attrlist args} {
 	lappend attrlist xmlns [lindex $argsarr(-namespacedecls) 0]
     }
     
-    if {[set ndx [string last : $tagname]] != -1} {
-        set ns [string range $tagname 0 [expr {$ndx - 1}]]
-        set tagname [string range $tagname [incr ndx] end]
-        lappend attrlist xmlns $ns
-        if {$debug > 1} {
-            puts "        exploded [list $ns $tagname]"
-        }
+    if {$wrapper($id,class) eq "tdom"} {
+	if {[set ndx [string last : $tagname]] != -1} {
+	    set ns [string range $tagname 0 [expr {$ndx - 1}]]
+	    set tagname [string range $tagname [incr ndx] end]
+	    lappend attrlist xmlns $ns
+	}
     }
 
     if {$wrapper($id,level) == 0} {
@@ -305,16 +317,16 @@ proc wrapper::elementstart {id tagname attrlist args} {
 
 proc wrapper::elementend {id tagname args} {
     variable wrapper
-    variable debug
-    
-    if {$debug > 1}  {
-	puts "wrapper::elementend id=$id, tagname=$tagname,  \
-	  args='$args', level=$wrapper($id,level)"
+
+    # tclxml doesn't do the reset properly but continues to send us endtags.
+    # qdxml behaves better!
+    if {!$wrapper($id,level)} {
+	return
     }
     
     # Check args, to see if empty element
     set isempty 0
-    set ind [lsearch $args {-empty}]
+    set ind [lsearch -exact $args {-empty}]
     if {$ind >= 0} {
 	set isempty [lindex $args [expr {$ind + 1}]]
     }
@@ -335,14 +347,15 @@ proc wrapper::elementend {id tagname args} {
 	set childlevel $wrapper($id,level)
 	
 	# Insert the child tree in the parent tree.
+	# Avoid adding to the level 1 else we just consume memory forever [PT]
 	set level [incr wrapper($id,level) -1]
-	append_child $id $level $wrapper($id,tree,$childlevel)
-
-	if {$level == 1} {
+	if {$level > 1} {
+	    append_child $id $level $wrapper($id,tree,$childlevel)
+	} elseif {$level == 1} {
 	    
 	    # We've got an end tag of a command tag, and it's time to
 	    # deliver our parse tree to the registered callback proc.
-	    uplevel #0 "$wrapper($id,parsecmd) [list $wrapper($id,tree,2)]"
+	    uplevel #0 $wrapper($id,parsecmd) [list $wrapper($id,tree,2)]
 	}
     }
 }
@@ -361,11 +374,6 @@ proc wrapper::elementend {id tagname args} {
 
 proc wrapper::append_child {id level childtree} {
     variable wrapper
-    variable debug
-
-    if {$debug > 1} {
-	puts "wrapper::append_child id=$id, level=$level, childtree='$childtree'"
-    }
 
     # Get child list at parent level (level).
     set childlist [lindex $wrapper($id,tree,$level) 4]
@@ -391,12 +399,7 @@ proc wrapper::append_child {id level childtree} {
 
 proc wrapper::chdata {id chardata} {   
     variable wrapper
-    variable debug
 
-    if {$debug > 2}  {
-	puts "wrapper::chdata id=$id, chardata='$chardata',  \
-	  level=$wrapper($id,level)"
-    }
     set level $wrapper($id,level)
     
     # If we receive CHDATA before any root element, 
@@ -412,6 +415,18 @@ proc wrapper::chdata {id chardata} {
       [lreplace $wrapper($id,tree,$level) 3 3 "$chdata"]
 }
 
+# wrapper::free -- 
+# 
+#      tdom doesn't permit freeing a parser from within a callback. So 
+#      we keep trying until it works. 
+# 
+
+proc wrapper::free {id} { 
+    if {[catch {$id free}]} { 
+	after 100 [list [namespace origin free] $id] 
+    } 
+} 
+
 # wrapper::reset --
 #
 #       Resets the wrapper and XML parser to be prepared for a fresh new 
@@ -426,40 +441,60 @@ proc wrapper::chdata {id chardata} {
 
 proc wrapper::reset {id} {   
     variable wrapper
-    variable debug
-
-    if {$debug > 1} {
-	puts "wrapper::reset id=$id"
-    }
-
-    if {0} {
+    
+    if {$wrapper($id,class) eq "tdom"} {
 	
+	# We cannot reset a tdom expat parser from within a callback. However,
+	# we can always replace it with a new one.
+	set old $wrapper($id,parser)
+	after idle [list [namespace origin free] $old]
+	#set wrapper($id,parser) [xml::parser -namespace 1]
+	set wrapper($id,parser) [expat -namespace 1]
+	
+	$wrapper($id,parser) configure  \
+	  -final 0  \
+	  -elementstartcommand  [list [namespace current]::elementstart $id]   \
+	  -elementendcommand    [list [namespace current]::elementend $id]     \
+	  -characterdatacommand [list [namespace current]::chdata $id]         \
+	  -ignorewhitespace 0
+    } else {
+    
 	# This resets the actual XML parser. Not sure this is actually needed.
 	$wrapper($id,parser) reset
-	if {$debug > 1} {
-	    puts "   wrapper::reset configure parser"
+	
+	# Unfortunately it also removes all our callbacks and options.
+	if {$wrapper($id,class) eq "expat"} {
+	    $wrapper($id,parser) configure   \
+	      -final 0    \
+	      -reportempty 1   \
+	      -elementstartcommand  [list [namespace current]::elementstart $id]   \
+	      -elementendcommand    [list [namespace current]::elementend $id]     \
+	      -characterdatacommand [list [namespace current]::chdata $id]         \
+	      -ignorewhitespace     1                                              \
+	      -defaultexpandinternalentities 0
+	} else {
+	    $wrapper($id,parser) configure   \
+	      -final 0    \
+	      -reportempty 1   \
+	      -elementstartcommand  [list [namespace current]::elementstart $id]   \
+	      -elementendcommand    [list [namespace current]::elementend $id]     \
+	      -characterdatacommand [list [namespace current]::chdata $id]         \
+	      -errorcommand         [list [namespace current]::xmlerror $id]       \
+	      -ignorewhitespace     1                                              \
+	      -defaultexpandinternalentities 0
 	}
-    
-	$wrapper($id,parser) configure   \
-	    -final 0    \
-	    -elementstartcommand  [list [namespace current]::elementstart $id]   \
-	    -elementendcommand    [list [namespace current]::elementend $id]     \
-	    -characterdatacommand [list [namespace current]::chdata $id]         \
-	    -ignorewhitespace     1
+    }
 
-    }
-    
     # Cleanup internal state vars.
-    set lev 2
-    while {[info exists wrapper($id,tree,$lev)]} {
-	unset wrapper($id,tree,$lev)
-	incr lev
-    }
+    array unset wrapper $id,tree,*
     
     # Reset also our internal wrapper to its initial position.
     set wrapper($id,level) 0
-    set wrapper($id,levelonetag) {}
-    set wrapper($id,tree,2) {}  
+    set wrapper($id,levelonetag) ""
+    set wrapper($id,tree,2) [list] 
+
+    set wrapper($id,refcount) 0
+    set wrapper($id,stack) ""
 }
 
 # wrapper::xmlerror --
@@ -475,18 +510,8 @@ proc wrapper::reset {id} {
 
 proc wrapper::xmlerror {id args} {
     variable wrapper
-    variable debug
 
-    if {$debug > 1} {
-	puts "wrapper::xmlerror id=$id, args='$args'"
-    }
-
-    # Resets the wrapper and XML parser to be prepared for a fresh new document.
-    #reset $id
-    #uplevel #0 $wrapper($id,errorcmd) [list $args] ????
     uplevel #0 $wrapper($id,errorcmd) $args
-    #reset $id
-    return -code error {Fatal XML error}
 }
 
 # wrapper::createxml --
@@ -505,10 +530,11 @@ proc wrapper::xmlerror {id args} {
 proc wrapper::createxml {xmllist} {
         
     # Extract the XML data items.
-    foreach {tag attrlist isempty chdata childlist} $xmllist {break}
+    foreach {tag attrlist isempty chdata childlist} $xmllist { break }
+    set attrlist [xmlcrypt $attrlist]
     set rawxml "<$tag"
     foreach {attr value} $attrlist {
-	append rawxml " ${attr}='${value}'"
+	append rawxml " $attr='$value'"
     }
     if {$isempty} {
 	append rawxml "/>"
@@ -526,6 +552,58 @@ proc wrapper::createxml {xmllist} {
 	    append rawxml [xmlcrypt $chdata]
 	}
 	append rawxml "</$tag>"
+    }
+    return $rawxml
+}
+
+# wrapper::formatxml, formattag --
+# 
+#       Creates formatted raw xml data from a xml list.
+
+proc wrapper::formatxml {xmllist args} {
+    variable tabs
+    variable nl
+    variable prefix
+    
+    array set argsA {
+	-prefix ""
+    }
+    array set argsA $args
+    set prefix $argsA(-prefix)
+    set nl ""
+    set tabs ""
+    formattag $xmllist
+}
+
+proc wrapper::formattag {xmllist} {
+    variable tabs
+    variable nl
+    variable prefix
+    
+    foreach {tag attrlist isempty chdata childlist} $xmllist { break }
+    set attrlist [xmlcrypt $attrlist]
+    set rawxml "$nl$prefix$tabs<$tag"
+    foreach {attr value} $attrlist {
+	append rawxml " $attr='$value'"
+    }
+    set nl "\n"
+    if {$isempty} {
+	append rawxml "/>"
+    } else {
+	append rawxml ">"
+	if {[llength $childlist]} {
+	    append tabs "\t"
+	    foreach child $childlist {
+		append rawxml [formattag $child]
+	    }
+	    set tabs [string range $tabs 0 end-1]
+	    append rawxml "$nl$prefix$tabs</$tag>"
+	} else {
+	    if {[string length $chdata]} {
+		append rawxml [xmlcrypt $chdata]
+	    }
+	    append rawxml "</$tag>"
+	}
     }
     return $rawxml
 }
@@ -557,21 +635,29 @@ proc wrapper::createtag {tagname args} {
     array set xmlarr $xmldefaults
     
     # Override the defults with actual values.
-    if {[llength $args] > 0} {
+    if {[llength $args]} {
 	array set xmlarr $args
     }
-    if {!(($xmlarr(-chdata) == "") && ($xmlarr(-subtags) == ""))} {
+    if {[string length $xmlarr(-chdata)] || [llength $xmlarr(-subtags)]} {
 	set xmlarr(-isempty) 0
     }
     
     # Build sub elements list.
-    set sublist {}
+    set sublist [list]
     foreach child $xmlarr(-subtags) {
 	lappend sublist $child
     }
     set xmllist [list $tagname $xmlarr(-attrlist) $xmlarr(-isempty)  \
       $xmlarr(-chdata) $sublist]
     return $xmllist
+}
+
+# wrapper::validxmllist --
+# 
+#       Makes a primitive check to see if this is a valid xmllist.
+
+proc wrapper::validxmllist {xmllist} {
+    return [expr ([llength $xmllist] == 5) ? 1 : 0]
 }
 
 # wrapper::getattr --
@@ -592,7 +678,7 @@ proc wrapper::getattr {attrlist attrname} {
 	    return $val
 	}
     }
-    return {}
+    return
 }
 
 proc wrapper::getattribute {xmllist attrname} {
@@ -602,7 +688,7 @@ proc wrapper::getattribute {xmllist attrname} {
 	    return $val
 	}
     }
-    return {}
+    return
 }
 
 proc wrapper::isattr {attrlist attrname} {
@@ -632,7 +718,7 @@ proc wrapper::setattr {attrlist attrname value} {
     return [array get attrArr]
 }
 
-# wrapper::gettag, getattrlist, getisempty, ,getcdata, getchildren  --
+# wrapper::gettag, getattrlist, getisempty, getcdata, getchildren  --
 #
 #       Accessor functions for 'xmllist'.
 #       {tag attrlist isempty cdata {grandchild1 grandchild2 ...}}
@@ -674,7 +760,7 @@ proc wrapper::splitxml {xmllist tagVar attrVar cdataVar childVar} {
 
 proc wrapper::getchildswithtag {xmllist tag} {
     
-    set clist {}
+    set clist [list]
     foreach celem [lindex $xmllist 4] {
 	if {[string equal [lindex $celem 0] $tag]} {
 	    lappend clist $celem
@@ -683,28 +769,83 @@ proc wrapper::getchildswithtag {xmllist tag} {
     return $clist
 }
 
-proc wrapper::getchildwithtaginnamespace {xmllist tag ns} {
+proc wrapper::getfirstchildwithtag {xmllist tag} {
     
-    set clist {}
+    set c [list]
     foreach celem [lindex $xmllist 4] {
 	if {[string equal [lindex $celem 0] $tag]} {
-	    unset -nocomplain attrArr
-	    array set attrArr [lindex $celem 1]
-	    if {[info exists attrArr(xmlns)] &&  \
-	      [string equal $attrArr(xmlns) $ns]} {
+	    set c $celem
+	    break
+	}
+    }
+    return $c
+}
+
+proc wrapper::havechildtag {xmllist tag} {
+    return [llength [getfirstchildwithtag $xmllist $tag]]
+}
+
+proc wrapper::getfirstchildwithxmlns {xmllist ns} {
+    
+    set c [list]
+    foreach celem [lindex $xmllist 4] {
+	unset -nocomplain attr
+	array set attr [lindex $celem 1]
+	if {[info exists attr(xmlns)] && [string equal $attr(xmlns) $ns]} {
+	    set c $celem
+	    break
+	}
+    }
+    return $c
+}
+
+proc wrapper::getchildswithtagandxmlns {xmllist tag ns} {
+
+    set clist [list]
+    foreach celem [lindex $xmllist 4] {
+	if {[string equal [lindex $celem 0] $tag]} {
+	    unset -nocomplain attr
+	    array set attr [lindex $celem 1]
+	    if {[info exists attr(xmlns)] && [string equal $attr(xmlns) $ns]} {
 		lappend clist $celem
-		break
 	    }
 	}
     }
     return $clist
 }
 
+proc wrapper::getfirstchild {xmllist tag ns} {
+    
+    set elem [list]
+    foreach celem [lindex $xmllist 4] {
+	if {[string equal [lindex $celem 0] $tag]} {
+	    unset -nocomplain attr
+	    array set attr [lindex $celem 1]
+	    if {[info exists attr(xmlns)] && [string equal $attr(xmlns) $ns]} {
+		set elem $celem
+		break
+	    }
+	}
+    }
+    return $elem
+}
+
 proc wrapper::getfromchilds {childs tag} {
     
-    set clist {}
+    set clist [list]
     foreach celem $childs {
 	if {[string equal [lindex $celem 0] $tag]} {
+	    lappend clist $celem
+	}
+    }
+    return $clist
+}
+
+proc wrapper::deletefromchilds {childs tag} {
+    
+    set clist [list]
+    foreach celem $childs {
+	if {![string equal [lindex $celem 0] $tag]} {
 	    lappend clist $celem
 	}
     }
@@ -713,13 +854,12 @@ proc wrapper::getfromchilds {childs tag} {
 
 proc wrapper::getnamespacefromchilds {childs tag ns} {
     
-    set clist {}
+    set clist [list]
     foreach celem $childs {
 	if {[string equal [lindex $celem 0] $tag]} {
-	    unset -nocomplain attrArr
-	    array set attrArr [lindex $celem 1]
-	    if {[info exists attrArr(xmlns)] &&  \
-	      [string equal $attrArr(xmlns) $ns]} {
+	    unset -nocomplain attr
+	    array set attr [lindex $celem 1]
+	    if {[info exists attr(xmlns)] && [string equal $attr(xmlns) $ns]} {
 		lappend clist $celem
 		break
 	    }
@@ -728,19 +868,100 @@ proc wrapper::getnamespacefromchilds {childs tag ns} {
     return $clist
 }
 
-proc wrapper::setattrlist {xmllist attrlist} {
- 
+# wrapper::getchilddeep --
+# 
+#       Searches recursively for the first child with matching tags and 
+#       optionally matching xmlns attributes.
+#       
+# Arguments:
+#       xmllist:    an xml hierarchical list.
+#       specs:      {{tag ?xmlns?} {tag ?xmlns?} ...}
+#       
+# Results:
+#       first found matching child element or empty if not found
+
+proc wrapper::getchilddeep {xmllist specs} {
+    
+    set xlist $xmllist
+    
+    foreach cspec $specs {
+	set tag   [lindex $cspec 0]
+	set xmlns [lindex $cspec 1]
+	set match 0
+	
+	foreach c [lindex $xlist 4] {
+	    if {[string equal $tag [lindex $c 0]]} {
+		if {[string length $xmlns]} {
+		    array unset attr
+		    array set attr [lindex $c 1]
+		    if {[info exists attr(xmlns)] && \
+		      [string equal $xmlns $attr(xmlns)]} {
+			set xlist $c
+			set match 1
+			break
+		    } else {
+			# tag matched but not xmlns; go for next child.
+			continue
+		    }
+		}
+		set xlist $c
+		set match 1
+		break
+	    }
+	}
+	# No matches found.
+	if {!$match} {
+	    return
+	}
+    }
+    return $xlist
+}
+
+proc wrapper::setattrlist {xmllist attrlist} { 
     return [lreplace $xmllist 1 1 $attrlist]
 }
 
 proc wrapper::setcdata {xmllist cdata} {
- 
     return [lreplace $xmllist 3 3 $cdata]
 }
 
 proc wrapper::setchildlist {xmllist childlist} {
-
     return [lreplace $xmllist 4 4 $childlist]
+}
+
+# wrapper::setchildwithtag --
+# 
+#       Replaces any element with same tag. 
+#       If not there it will be added.
+#       xmllist must be nonempty.
+
+proc wrapper::setchildwithtag {xmllist elem} {
+    set tag [lindex $elem 0]
+    set clist [list]
+    foreach c [lindex $xmllist 4] {
+	if {[lindex $c 0] ne $tag} {
+	    lappend clist $c
+	}
+    }
+    lappend clist $elem
+    # IMPORTANT:
+    lset xmllist 2 0
+    return [lreplace $xmllist 4 4 $clist]
+}
+
+# wrapper::deletechildswithtag --
+# 
+#       Deletes any element with tag.
+#       xmllist must be nonempty.
+
+proc wrapper::deletechildswithtag {xmllist tag} {
+    set clist [list]
+    foreach c [lindex $xmllist 4] {
+	if {[lindex $c 0] ne $tag} {
+	    lappend clist $c
+	}
+    }
+    return [lreplace $xmllist 4 4 $clist]
 }
 
 # wrapper::xmlcrypt --
@@ -754,12 +975,22 @@ proc wrapper::setchildlist {xmllist childlist} {
 #       chdata with XML standard entities replaced.
 
 proc wrapper::xmlcrypt {chdata} {
-
-    foreach from {\& < > {"} {'}}   \
-      to {{\&amp;} {\&lt;} {\&gt;} {\&quot;} {\&apos;}} {
-	regsub -all $from $chdata $to chdata
-    }	
-    return $chdata
+    
+    # RFC 3454 (STRINGPREP):
+    # C.2.1 ASCII control characters
+    #    0000-001F; [CONTROL CHARACTERS]
+    #    007F; DELETE
+    
+    return [string map {& &amp; < &lt; > &gt; \" &quot; ' &apos;
+                        \x00 " " \x01 " " \x02 " " \x03 " "
+			\x04 " " \x05 " " \x06 " " \x07 " "
+			\x08 " "                   \x0B " "
+			\x0C " "          \x0E " " \x0F " "
+			\x10 " " \x11 " " \x12 " " \x13 " "
+			\x14 " " \x15 " " \x16 " " \x17 " "
+			\x18 " " \x19 " " \x1A " " \x1B " "
+			\x1C " " \x1D " " \x1E " " \x1F " "
+		        \x7F " "} $chdata]
 }
 
 # wrapper::xmldecrypt --
@@ -774,11 +1005,9 @@ proc wrapper::xmlcrypt {chdata} {
 
 proc wrapper::xmldecrypt {chdata} {
 
-    foreach from {{\&amp;} {\&lt;} {\&gt;} {\&quot;} {\&apos;}}   \
-      to {{\&} < > {"} {'}} {
-	regsub -all $from $chdata $to chdata
-    }	
-    return $chdata
+    return [string map {
+	{&amp;} {&} {&lt;} {<} {&gt;} {>} {&quot;} {"} {&apos;} {'}} $chdata]
+    #'"
 }
 
 # wrapper::parse_xmllist_to_array --
@@ -825,12 +1054,8 @@ proc wrapper::parse_xmllist_to_array {xmllist arrName {key {}}} {
 	# This is a leaf of the tree structure.
 	set locArr($key) [lindex $xmllist 3]
     }
-    return {}
+    return
 }
 
 #-------------------------------------------------------------------------------
-
-package provide xmppd::wrapper 1.0.0
-
-# -------------------------------------------------------------------------
-
+package provide xmppd::wrapper 1.2
