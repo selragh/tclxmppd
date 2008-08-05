@@ -9,7 +9,7 @@
 # $Id$
 
 set auto_path [linsert $auto_path 0 \
-                   [file dirname [file dirname [info script]]]]
+                   [file dirname [file dirname [file normalize [info script]]]]]
 
 package require xmppd::core
 package require xmppd::s2s
@@ -24,7 +24,7 @@ proc Handler {xmllist} {
     switch -exact -- [set type [wrapper::gettag $xmllist]] {
         iq {
             # RFC3921 3: Session Establishment
-            set sx [wrapper::getchildwithtaginnamespace $xmllist \
+            set sx [wrapper::getchildswithtagandxmlns $xmllist \
                         session [xmppd::xmlns session]]
             if {[llength $sx] > 0} {
                 # FIX ME: create a Jabberd session for this connected resource

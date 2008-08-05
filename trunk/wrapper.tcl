@@ -122,7 +122,7 @@ proc wrapper::new {streamstartcmd streamendcmd parsecmd errorcmd} {
 
     if {[llength [package provide tdom]]} {
 	#set wrapper($id,parser) [xml::parser -namespace 1]
-	set wrapper($id,parser) [expat -namespace 1]
+	set wrapper($id,parser) [expat -namespace 0]
 	set wrapper($id,class) "tdom"
 	$wrapper($id,parser) configure \
 	  -final 0  \
@@ -281,6 +281,16 @@ proc wrapper::elementstart {id tagname attrlist args} {
 	    set tagname [string range $tagname [incr ndx] end]
 	    lappend attrlist xmlns $ns
 	}
+        # hack: un-expand xml:lang namespace attribute
+        set newattrs {}
+        foreach {an av} $attrlist {
+            if {[string match "http://www.w3.org/XML/1998/namespace:*" $an]} {
+                lappend newattrs xml[string range $an 36 end] $av
+            } else {
+                lappend newattrs $an $av
+            }
+        }
+        set attrlist $newattrs
     }
 
     if {$wrapper($id,level) == 0} {
