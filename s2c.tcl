@@ -162,8 +162,8 @@ proc ::xmppd::s2c::Accept {chan clientaddr clientport} {
              [list [namespace current]::OnOpenStream $Channel] \
              [list [namespace current]::OnCloseStream $Channel] \
              [list [namespace current]::OnInput $Channel] \
-             [list [namespace current]::OnError $Channel] \
-             -namespace 0]
+             [list [namespace current]::OnError $Channel]]
+    #-namespace 0
 
     fconfigure $chan -translation binary -encoding utf-8 \
         -buffering none -blocking 0
@@ -494,7 +494,7 @@ proc ::xmppd::s2c::OnInput {Channel xmllist} {
         iq {
             Log debug "- iq $xmllist { $channel(state) }"
             if {$channel(state) eq "authorized"} {
-                set bind [lindex [wrapper::getchildwithtaginnamespace \
+                set bind [lindex [wrapper::getchildswithtagandxmlns \
                                       $xmllist bind [xmlns bind]] 0]
                 Log debug "[string repeat - 60]\n$bind\n[string repeat - 60]\n"
                 if {$bind ne {}} {

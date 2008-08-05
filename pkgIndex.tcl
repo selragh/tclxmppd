@@ -4,7 +4,7 @@
 #
 # $Id: pkgIndex.tcl,v 1.1 2004/11/28 10:20:34 pat Exp $
 
-package ifneeded xmppd::core 1.0.0 [list source [file join $dir core.tcl]]
+package ifneeded xmppd::core 0.1.0 [list source [file join $dir core.tcl]]
 package ifneeded xmppd::s2s  1.0.0 [list source [file join $dir s2s.tcl]]
 package ifneeded xmppd::s2c  1.0.0 [list source [file join $dir s2c.tcl]]
 package ifneeded xmppd::sm   1.0.0 [list source [file join $dir sm.tcl]]

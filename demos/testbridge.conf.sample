@@ -1,0 +1,23 @@
+# Jabber component configuration file
+#
+# You MUST modify this to suit your environment.
+
+# Local server name
+#    The JID is the jabber domain for your component. This needs to
+#    be present in your DNS records as a SRV record such as
+#    _xmpp-server._tcp.$JID 10 5269 primarydomain.name
+#
+JID            COMPONENT.DOMAIN.NAME
+Resource       Component
+
+JabberServer   localhost
+JabberPort     5347
+Secret         JCPPASSWORD
+
+# Details for the Jabber conference room to join to.
+#
+Conference      MUC@CONFERENCE.DOMAIN.NAME
+
+# How noisy? One of:
+#   debug info notice warn error critical
+LogLevel       notice
